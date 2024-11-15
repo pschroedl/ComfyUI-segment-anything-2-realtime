@@ -39,7 +39,7 @@ class SAM2CameraPredictor(SAM2Base):
         self.condition_state = {}
         self.frame_idx = 0
 
-    def perpare_data(
+    def prepare_data(
         self,
         img,
         image_size=1024,
@@ -51,17 +51,27 @@ class SAM2CameraPredictor(SAM2Base):
             img_np = cv2.resize(img_np, (image_size, image_size)) / 255.0
             height, width = img.shape[:2]
         else:
-            img_np = (
-                np.array(img.convert("RGB").resize((image_size, image_size))) / 255.0
-            )
+            img_np = np.array(img.convert("RGB").resize((image_size, image_size))) / 255.0
             width, height = img.size
-        img = torch.from_numpy(img_np).permute(2, 0, 1).float()
 
-        img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
-        img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
+        # Convert to CxHxW format
+        img = torch.from_numpy(img_np).permute(2, 0, 1).float()  # Shape: (3, H, W)
+
+        # Ensure img_mean and img_std are tensors of shape (3,)
+        img_mean = torch.tensor(img_mean, dtype=torch.float32).view(3, 1, 1)  # Shape (3, 1, 1)
+        img_std = torch.tensor(img_std, dtype=torch.float32).view(3, 1, 1)    # Shape (3, 1, 1)
+        
+        print(f"img shape: {img.shape}, img_mean shape: {img_mean.shape}")
+
+        # Ensure the image tensor is correctly aligned with the mean and std
+        assert img.shape[0] == 3, f"Expected 3 channels, but got {img.shape[0]} channels"
+
+        # Broadcast subtraction and division over the channels (3, H, W)
         img -= img_mean
         img /= img_std
+
         return img, width, height
+
 
     @torch.inference_mode()
     def load_first_frame(self, img):
@@ -69,7 +79,7 @@ class SAM2CameraPredictor(SAM2Base):
         self.condition_state = self._init_state(
             offload_video_to_cpu=False, offload_state_to_cpu=False
         )
-        img, width, height = self.perpare_data(img, image_size=self.image_size)
+        img, width, height = self.prepare_data(img, image_size=self.image_size)
         self.condition_state["images"] = [img]
         self.condition_state["num_frames"] = len(self.condition_state["images"])
         self.condition_state["video_height"] = height
@@ -77,7 +87,7 @@ class SAM2CameraPredictor(SAM2Base):
         self._get_image_feature(frame_idx=0, batch_size=1)
 
     def add_conditioning_frame(self, img):
-        img, width, height = self.perpare_data(img, image_size=self.image_size)
+        img, width, height = self.prepare_data(img, image_size=self.image_size)
         self.condition_state["images"].append(img)
         self.condition_state["num_frames"] = len(self.condition_state["images"])
         self._get_image_feature(
@@ -754,7 +764,7 @@ class SAM2CameraPredictor(SAM2Base):
         if not self.condition_state["tracking_has_started"]:
             self.propagate_in_video_preflight()
 
-        img, _, _ = self.perpare_data(img, image_size=self.image_size)
+        img, _, _ = self.prepare_data(img, image_size=self.image_size)
 
         output_dict = self.condition_state["output_dict"]
         obj_ids = self.condition_state["obj_ids"]

@@ -4,6 +4,7 @@ import os
 import numpy as np
 import json
 import random
+import threading
 
 from tqdm import tqdm
 from contextlib import nullcontext
@@ -750,6 +751,10 @@ class Sam2CameraSegmentation:
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "segment_images"
     CATEGORY = "SAM2"
+    
+    def __init__(self):
+        self.if_init = False
+        self.predictor = None
 
     def segment_images(self, images, sam2_model, keep_model_loaded):
         offload_device = mm.unet_offload_device()
@@ -759,13 +764,14 @@ class Sam2CameraSegmentation:
         segmentor = sam2_model["segmentor"]
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(device)
+        model.to(device)
 
         frame_lock = threading.Lock()
         processed_frames = []
         
         # The `model` variable is now ready and equivalent to `predictor` returned by sam2.build_sam.build_sam2_camera_predictor
-        predictor = model
+        if self.predictor is None:
+            self.predictor = model
 
         def process_frame(frame, frame_idx):
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):

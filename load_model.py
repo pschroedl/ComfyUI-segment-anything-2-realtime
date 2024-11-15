@@ -1,3 +1,5 @@
+import logging
+import torch
 import yaml
 from .sam2.modeling.sam2_base import SAM2Base
 from .sam2.modeling.backbones.image_encoder import ImageEncoder
@@ -13,6 +15,11 @@ from .sam2.sam2_video_predictor import SAM2VideoPredictor
 from .sam2.sam2_camera_predictor import SAM2CameraPredictor
 from .sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from comfy.utils import load_torch_file
+
+from omegaconf import OmegaConf
+from hydra.utils import instantiate
+from hydra import initialize_config_dir, compose
+from hydra.core.global_hydra import GlobalHydra
 
 def load_model(model_path, model_cfg_path, segmentor, dtype, device):
     # Load the YAML configuration
@@ -166,8 +173,8 @@ def load_model(model_path, model_cfg_path, segmentor, dtype, device):
             multimask_max_pt_num=model_config['multimask_max_pt_num'],
             use_mlp_for_obj_ptr_proj=model_config['use_mlp_for_obj_ptr_proj'],
             proj_tpos_enc_in_obj_ptrs=model_config['proj_tpos_enc_in_obj_ptrs'],
-            no_obj_embed_spatial=model_config['no_obj_embed_spatial'],
-            use_signed_tpos_enc_to_obj_ptrs=model_config['use_signed_tpos_enc_to_obj_ptrs'],
+            # no_obj_embed_spatial=model_config['no_obj_embed_spatial'],
+            # use_signed_tpos_enc_to_obj_ptrs=model_config['use_signed_tpos_enc_to_obj_ptrs'],
             binarize_mask_from_pts_for_mem_enc=True if segmentor == 'video' else False,
         ).to(dtype).to(device).eval()
 
@@ -190,10 +197,45 @@ def load_model(model_path, model_cfg_path, segmentor, dtype, device):
         model.load_state_dict(sd)
         model = SAM2AutomaticMaskGenerator(model)
     elif segmentor == 'realtime':
-        model_class = SAM2Base
-        model = initialize_model(model_class, model_config, segmentor, image_encoder, memory_attention, memory_encoder, sam_mask_decoder_extra_args, dtype, device)
+        # Code ripped out of sam2.build_sam.build_sam2_camera_predictor to appease Hydra
+        model_cfg = "sam2_hiera_t.yaml" #TODO: remove hardcoded config and path
+        with initialize_config_dir(config_dir="/home/pedro/Documents/workspace/comfyRealtime/ComfyUI/custom_nodes/ComfyUI-segment-anything-2-realtime/sam2_configs/", version_base=None):
+            cfg = compose(config_name=model_cfg)
+
+            hydra_overrides = [
+                "++model._target_=sam2.sam2_camera_predictor.SAM2CameraPredictor",
+            ]
+            hydra_overrides_extra = [
+                "++model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability=true",
+                "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_delta=0.05",
+                "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh=0.98",
+                "++model.binarize_mask_from_pts_for_mem_enc=true",
+                "++model.fill_hole_area=8",
+            ]
+            hydra_overrides.extend(hydra_overrides_extra)
+
+            cfg = compose(config_name=model_cfg, overrides=hydra_overrides)
+            OmegaConf.resolve(cfg)
+
+            model = instantiate(cfg.model, _recursive_=True)
+
+        # def _load_checkpoint(model, ckpt_path):
+        #     if ckpt_path is not None:
+        #         sd = torch.load(ckpt_path, map_location="cpu")["model"]
+        #         missing_keys, unexpected_keys = model.load_state_dict(sd)
+        #         if missing_keys:
+        #             logging.error(f"Missing keys: {missing_keys}")
+        #             raise RuntimeError("Missing keys while loading checkpoint.")
+        #         if unexpected_keys:
+        #             logging.error(f"Unexpected keys: {unexpected_keys}")
+        #             raise RuntimeError("Unexpected keys while loading checkpoint.")
+        #         logging.info("Loaded checkpoint successfully.")
+
+        # _load_checkpoint(model, sam2_checkpoint)
         model.load_state_dict(sd)
-        model = SAM2CameraPredictor(model)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = model.to(device)
+        model.eval()
     else:
         raise ValueError(f"Segmentor {segmentor} not supported")
 
