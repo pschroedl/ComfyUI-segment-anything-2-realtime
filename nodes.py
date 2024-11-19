@@ -766,18 +766,38 @@ class Sam2CameraSegmentation:
         if mask.shape[:2] != frame_shape[:2]:
             mask = cv2.resize(mask, (frame_shape[1], frame_shape[0]))
         return mask
+    
+import torch
+import numpy as np
+import cv2
+
+class Sam2CameraSegmentation:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "sam2_model": ("SAM2MODEL",),
+                "keep_model_loaded": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_NAMES = ("PROCESSED_IMAGES",)
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "segment_images"
+    CATEGORY = "SAM2"
+
+    def __init__(self):
+        self.predictor = None
+        self.if_init = False
 
     def segment_images(self, images, sam2_model, keep_model_loaded):
-        offload_device = mm.unet_offload_device()
         model = sam2_model["model"]
         device = sam2_model["device"]
-        dtype = sam2_model["dtype"]
-        segmentor = sam2_model["segmentor"]
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cuda")
         model.to(device)
 
-        # frame_lock = threading.Lock()
         processed_frames = []
         
         # The `model` variable is now ready and equivalent to `predictor` returned by sam2.build_sam.build_sam2_camera_predictor
@@ -786,13 +806,17 @@ class Sam2CameraSegmentation:
 
         def process_frame(frame, frame_idx):
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                # frame = frame.permute(1, 2, 0).cpu().numpy()  # Convert back to HWC format for OpenCV
-                # height, width = frame.shape[:2]
+                height = 512
+                width = 512
 
-                height = 1024
-                width = 1024
+                img_np = frame.numpy()
+                if img_np.shape[-1] != 3:
+                    img_np = img_np.transpose(1, 2, 0)  # CHW to HWC
+                if img_np.max() <= 1.0:
+                    img_np = (img_np * 255).astype(np.uint8)
+                
+                frame = img_np
 
-                # Initialization on the first frame
                 if not self.if_init:
                     self.predictor.load_first_frame(frame)
                     self.if_init = True
@@ -808,45 +832,25 @@ class Sam2CameraSegmentation:
                     # Track objects in subsequent frames
                     out_obj_ids, out_mask_logits = self.predictor.track(frame)
 
-                    all_mask = np.zeros((height, width, 1), dtype=np.uint8)
-                    # print(all_mask.shape)
-                    for i in range(0, len(out_obj_ids)):
-                        out_mask = (out_mask_logits[i] > 0.0).permute(1, 2, 0).cpu().numpy().astype(
-                            np.uint8
-                        ) * 255
+                # Process output mask only if it's non-empty
+                if out_mask_logits.shape[0] > 0:
+                    mask = (out_mask_logits[0, 0] > 0).cpu().numpy().astype("uint8") * 255
+                else:
+                    mask = np.zeros((frame.shape[0], frame.shape[1]), dtype="uint8")
 
-                        all_mask = cv2.bitwise_or(all_mask, out_mask)
+                # Invert and prepare the mask for overlay
+                inverted_mask_colored = cv2.cvtColor(cv2.bitwise_not(mask), cv2.COLOR_GRAY2BGR)
+                frame = frame.astype(np.uint8)
+                inverted_mask_colored = inverted_mask_colored.astype(np.uint8)
+                overlayed_frame = cv2.addWeighted(frame, 0.7, inverted_mask_colored, 0.3, 0)
+                image_tensor = torch.from_numpy(overlayed_frame).float() / 255.0  # Normalize to [0, 1]
+                processed_frames.append(image_tensor)
 
-                    if isinstance(frame, torch.Tensor): # we know it is
-                        frame = frame.permute(1, 2, 0).cpu().numpy() # Convert from CHW to HWC
+        for frame_idx, img in enumerate(images):
+            process_frame(img, frame_idx)
 
-                    all_mask = cv2.cvtColor(all_mask, cv2.COLOR_GRAY2RGB)
-                    frame = cv2.addWeighted(frame, 1, all_mask, 0.5, 0)
-
-                    # Thread-safe storage of processed frames
-                    # with frame_lock:
-                    processed_frames.append(torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0)
-        
-        def process_frame_a(frame, frame_idx):
-            # with frame_lock:
-            processed_frames.append(frame)  # Store the frame
-
-        # Process all images as frames
-        pbar = ProgressBar(images.shape[0])
-        images = images.permute(0, 3, 1, 2)
-        images_resized = F.interpolate(images, size=(1024,1024), mode='bilinear', align_corners=False)
-        # images_list = list(torch.split(images_resized, split_size_or_sections=1))
-        for frame_idx, frame in enumerate(images_resized):
-            process_frame_a(frame, frame_idx)
-            pbar.update(1)
-
-        # Convert processed frames into a tensor
-        processed_frames_np = np.array(processed_frames).astype(np.float32) / 255.0
-        processed_frames_tensor = torch.from_numpy(processed_frames_np)
-        processed_frames_tensor_resized = F.interpolate(processed_frames_tensor, size=(512,512), mode='bilinear', align_corners=False)
-        processed_frames_permuted = processed_frames_tensor_resized.permute(0, 2, 3, 1)
-        # Return the processed frames as a tensor
-        return (processed_frames_permuted,)
+        stacked_frames = torch.stack(processed_frames, dim=0) 
+        return (stacked_frames,)
 
 NODE_CLASS_MAPPINGS = {
     "DownloadAndLoadSAM2Model": DownloadAndLoadSAM2Model,
