@@ -46,32 +46,47 @@ class SAM2CameraPredictor(SAM2Base):
         img_mean=(0.485, 0.456, 0.406),
         img_std=(0.229, 0.224, 0.225),
     ):
-        if isinstance(img, np.ndarray):
-            img_np = img
-            img_np = cv2.resize(img_np, (image_size, image_size)) / 255.0
-            height, width = img.shape[:2]
-        else:
-            img_np = np.array(img.convert("RGB").resize((image_size, image_size))) / 255.0
-            width, height = img.size
+        # if not isinstance(img, np.ndarray):
+        #     raise ValueError(f"Expected input of type numpy.ndarray, but got {type(img)}")
 
-        # Convert to CxHxW format
-        img = torch.from_numpy(img_np).permute(2, 0, 1).float()  # Shape: (3, H, W)
+        # # Ensure that the input is in the (H, C, W) format
+        # if img.shape[1] != 3:
+        #     raise ValueError(f"Expected input with shape (H, 3, W), but got {img.shape}")
 
-        # Ensure img_mean and img_std are tensors of shape (3,)
-        img_mean = torch.tensor(img_mean, dtype=torch.float32).view(3, 1, 1)  # Shape (3, 1, 1)
-        img_std = torch.tensor(img_std, dtype=torch.float32).view(3, 1, 1)    # Shape (3, 1, 1)
+        # # Resize the image to the desired size (height, width)
+        # # OpenCV works with (H, W, C), so we need to permute the image before resizing
+        # img_resized = cv2.resize(img.transpose(0, 2, 1), (image_size, image_size)) / 255.0
         
-        print(f"img shape: {img.shape}, img_mean shape: {img_mean.shape}")
+        # # After resizing, the shape is (H, W, C), we need to permute it back to (C, H, W)
+        # img_resized = torch.from_numpy(img_resized).permute(2, 0, 1).float()
 
-        # Ensure the image tensor is correctly aligned with the mean and std
-        assert img.shape[0] == 3, f"Expected 3 channels, but got {img.shape[0]} channels"
+        # # Normalize the image (only if the model expects normalized inputs)
+        # img_mean = torch.tensor(img_mean, dtype=torch.float32).view(3, 1, 1)
+        # img_std = torch.tensor(img_std, dtype=torch.float32).view(3, 1, 1)
 
-        # Broadcast subtraction and division over the channels (3, H, W)
+        # img_resized -= img_mean
+        # img_resized /= img_std
+
+        # # Return the tensor in the expected shape
+        # return img_resized, image_size, image_size
+
+        # if isinstance(img, np.ndarray):
+        #     img_np = img
+        #     img_np = cv2.resize(img_np, (image_size, image_size)) / 255.0
+        #     height, width = img.shape[:2]
+        # else:
+        #     img_np = (
+        #         np.array(img.convert("RGB").resize((image_size, image_size))) / 255.0
+        #     )
+        #     width, height = img.size
+        # img = torch.from_numpy(img_np).permute(2, 0, 1).float()
+
+        # Normalize 
+        img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
+        img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
         img -= img_mean
         img /= img_std
-
-        return img, width, height
-
+        return img, 1024, 1024
 
     @torch.inference_mode()
     def load_first_frame(self, img):
