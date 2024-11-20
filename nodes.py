@@ -779,7 +779,14 @@ class Sam2CameraSegmentation:
                 "images": ("IMAGE",),
                 "sam2_model": ("SAM2MODEL",),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
-            }
+            },
+           "optional": {
+                "coordinates_positive": ("STRING", {"forceInput": True}),
+                "coordinates_negative": ("STRING", {"forceInput": True}),
+                "bboxes": ("BBOX", ),
+                "individual_objects": ("BOOLEAN", {"default": False}),
+                "mask": ("MASK", ),
+            },
         }
 
     RETURN_NAMES = ("PROCESSED_IMAGES",)
@@ -791,7 +798,17 @@ class Sam2CameraSegmentation:
         self.predictor = None
         self.if_init = False
 
-    def segment_images(self, images, sam2_model, keep_model_loaded):
+    def segment_images(
+        self,
+        images,
+        sam2_model,
+        keep_model_loaded,
+        coordinates_positive=None,
+        coordinates_negative=None,
+        bboxes=None,
+        individual_objects=False,
+        mask=None,
+    ):
         model = sam2_model["model"]
         device = sam2_model["device"]
 
@@ -823,7 +840,8 @@ class Sam2CameraSegmentation:
                     obj_id = 1
 
                     # Define point prompt (e.g., background selection for demo purposes)
-                    point = [int(width * 2 / 3), int(height / 2)]
+                    # point = [int(width * 2 / 3), int(height / 2)]
+                    point = [384,384]
                     points = [point]
                     labels = [1]
 
@@ -832,19 +850,45 @@ class Sam2CameraSegmentation:
                     # Track objects in subsequent frames
                     out_obj_ids, out_mask_logits = self.predictor.track(frame)
 
-                # Process output mask only if it's non-empty
-                if out_mask_logits.shape[0] > 0:
-                    mask = (out_mask_logits[0, 0] > 0).cpu().numpy().astype("uint8") * 255
-                else:
-                    mask = np.zeros((frame.shape[0], frame.shape[1]), dtype="uint8")
+            # Process output mask only if it's non-empty
+            if out_mask_logits.shape[0] > 0:
+                # Apply threshold at 0.5
+                mask = (out_mask_logits[0, 0] > 0.5).cpu().numpy().astype("uint8") * 255
+            else:
+                mask = np.zeros((frame.shape[0], frame.shape[1]), dtype="uint8")
 
-                # Invert and prepare the mask for overlay
-                inverted_mask_colored = cv2.cvtColor(cv2.bitwise_not(mask), cv2.COLOR_GRAY2BGR)
-                frame = frame.astype(np.uint8)
-                inverted_mask_colored = inverted_mask_colored.astype(np.uint8)
-                overlayed_frame = cv2.addWeighted(frame, 0.7, inverted_mask_colored, 0.3, 0)
-                image_tensor = torch.from_numpy(overlayed_frame).float() / 255.0  # Normalize to [0, 1]
-                processed_frames.append(image_tensor)
+            # Ensure the mask matches frame dimensions
+            if mask.shape[:2] != frame.shape[:2]:
+                mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+            # # Convert and prepare the inverted mask for overlay
+            # inverted_mask_colored = cv2.cvtColor(cv2.bitwise_not(mask), cv2.COLOR_GRAY2BGR)
+            # # inverted_mask_colored = mask
+            # if inverted_mask_colored.shape != frame.shape:
+            #     inverted_mask_colored = cv2.resize(inverted_mask_colored, (frame.shape[1], frame.shape[0]))
+
+            # # Ensure matching types for blending
+            # frame = frame.astype(np.uint8)
+            # inverted_mask_colored = inverted_mask_colored.astype(np.uint8)
+
+            # # Blend the frame with the mask
+            # overlayed_frame = cv2.addWeighted(frame, 0.7, inverted_mask_colored, 0.3, 0)
+
+
+            # Convert the mask to a 3-channel image without inversion
+            mask_colored = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            if mask_colored.shape != frame.shape:
+                mask_colored = cv2.resize(mask_colored, (frame.shape[1], frame.shape[0]))
+
+            # Ensure matching types for blending
+            frame = frame.astype(np.uint8)
+            mask_colored = mask_colored.astype(np.uint8)
+
+            # Blend the frame with the mask
+            overlayed_frame = cv2.addWeighted(frame, 0.7, mask_colored, 0.3, 0)
+
+            image_tensor = torch.from_numpy(overlayed_frame).float() / 255.0  # Normalize to [0, 1]
+            processed_frames.append(image_tensor)
 
         for frame_idx, img in enumerate(images):
             process_frame(img, frame_idx)
